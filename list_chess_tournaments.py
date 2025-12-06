@@ -1,5 +1,6 @@
 import os
 import time
+import duckdb
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -14,9 +15,39 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 
 BASE_URL = "https://chess-results.com/TurnierSuche.aspx?lan=1"
-SAVE_PATH = "processed_data"
+DB_PATH = "chess_data.duckdb"
 START_DATE = "01.01.2008"
 END_DATE = "01.01.2009"
+
+
+def init_db():
+    """Initialize DuckDB database."""
+    conn = duckdb.connect(DB_PATH)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tournaments (
+            query TEXT,
+            link TEXT UNIQUE,
+            checked BOOLEAN DEFAULT FALSE
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            tournament TEXT,
+            Name TEXT,
+            FideID TEXT,
+            Link TEXT,
+            Federation TEXT,
+            "Birth Year" TEXT,
+            Sex TEXT,
+            "FIDE Title" TEXT,
+            "World Rank" TEXT,
+            UNIQUE(tournament, Link)
+        )
+    """)
+
+    return conn
 
 
 def get_player_html(url):
@@ -102,7 +133,30 @@ def create_dataframe(headers, data):
     return pd.DataFrame(data, columns=headers).iloc[1:, :]
 
 
-def process_url(url):
+def store_players(conn, tournament, df):
+    """Persist players into DuckDB."""
+    for _, row in df.iterrows():
+        conn.execute("""
+            INSERT OR IGNORE INTO players (
+                tournament, Name, FideID, Link,
+                Federation, "Birth Year", Sex,
+                "FIDE Title", "World Rank"
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            tournament,
+            row.get("Name"),
+            row.get("FideID"),
+            row.get("Link"),
+            row.get("Federation"),
+            row.get("Birth Year"),
+            row.get("Sex"),
+            row.get("FIDE Title"),
+            row.get("World Rank"),
+        ))
+
+
+def process_url(conn, url):
     """Extract players and persist."""
     html_content = get_player_html(url)
     headers, table_data, title = parse_table(html_content)
@@ -114,19 +168,28 @@ def process_url(url):
     df = parse_fide_data(df)
     df = df[df["Link"].notna()]
 
-    filename = f"{title.replace(' ', '_')}.csv"
-    df.to_csv(os.path.join(SAVE_PATH, filename), index=False)
+    store_players(conn, title, df)
 
 
 def setup_driver():
     """Initialize Chrome driver."""
-    return webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+
+    return webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()),
+        options=options
+    )
 
 
 def accept_cookies(driver):
     """Accept site cookies."""
     try:
-        WebDriverWait(driver, 5).until(
+        WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "button.css-47sehv"))
         ).click()
     except Exception:
@@ -178,37 +241,41 @@ def search_and_collect_data(driver, query):
     return get_tournament_links(driver)
 
 
-def main():
+def run_data_collection():
     """Main execution loop."""
     queries = ["European Youth", "International Open", "World Youth"]
 
-    os.makedirs(SAVE_PATH, exist_ok=True)
-
+    conn = init_db()
     driver = setup_driver()
     driver.get(BASE_URL)
     accept_cookies(driver)
 
     for query in queries:
-        tracking_file = f"{query}.csv"
+        pending_links = conn.execute(
+            "SELECT link FROM tournaments WHERE query = ? AND checked = FALSE",
+            (query,)
+        ).fetchall()
 
-        if not os.path.exists(tracking_file):
+        pending_links = [r[0] for r in pending_links]
+
+        if not pending_links:
             links = search_and_collect_data(driver, query)
-            pd.DataFrame({"Link": links, "Checked": False}).to_csv(
-                tracking_file, index=False
+            for link in links:
+                conn.execute(
+                    "INSERT OR IGNORE INTO tournaments (query, link, checked) VALUES (?, ?, FALSE)",
+                    (query, link)
+                )
+            pending_links = links
+
+        for link in pending_links:
+            process_url(conn, link)
+            conn.execute(
+                "UPDATE tournaments SET checked = TRUE WHERE link = ?",
+                (link,)
             )
-        else:
-            df_links = pd.read_csv(tracking_file)
-            links = df_links.loc[df_links["Checked"] == False, "Link"].tolist()
-
-        df_links = pd.read_csv(tracking_file)
-
-        for link in links:
-            process_url(link)
-            df_links.loc[df_links["Link"] == link, "Checked"] = True
-            df_links.to_csv(tracking_file, index=False)
 
     driver.quit()
+    conn.close()
 
 
-if __name__ == "__main__":
-    main()
+run_data_collection()
