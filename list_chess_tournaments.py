@@ -1,8 +1,10 @@
 import os
 import time
 import duckdb
+import logging
 import requests
 import pandas as pd
+from tqdm import tqdm
 from bs4 import BeautifulSoup
 
 from selenium import webdriver
@@ -11,13 +13,22 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 BASE_URL = "https://chess-results.com/TurnierSuche.aspx?lan=1"
 DB_PATH = "chess_data.duckdb"
 START_DATE = "01.01.2008"
 END_DATE = "01.01.2009"
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler("scraper.log"),
+        logging.StreamHandler()
+    ]
+)
 
 
 def init_db():
@@ -158,17 +169,23 @@ def store_players(conn, tournament, df):
 
 def process_url(conn, url):
     """Extract players and persist."""
-    html_content = get_player_html(url)
-    headers, table_data, title = parse_table(html_content)
+    try:
+        html_content = get_player_html(url)
+        headers, table_data, title = parse_table(html_content)
 
-    if not table_data:
-        return
+        if not table_data:
+            logging.warning(f"No data table found: {url}")
+            return
 
-    df = create_dataframe(headers, table_data)
-    df = parse_fide_data(df)
-    df = df[df["Link"].notna()]
+        df = create_dataframe(headers, table_data)
+        df = parse_fide_data(df)
+        df = df[df["Link"].notna()]
 
-    store_players(conn, title, df)
+        store_players(conn, title, df)
+        logging.info(f"Processed tournament: {title}")
+
+    except Exception as e:
+        logging.error(f"Processing failed: {url} | {e}")
 
 
 def setup_driver():
@@ -181,7 +198,7 @@ def setup_driver():
     options.add_argument("--window-size=1920,1080")
 
     return webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
+        service=Service("/usr/bin/chromedriver"),
         options=options
     )
 
@@ -189,7 +206,7 @@ def setup_driver():
 def accept_cookies(driver):
     """Accept site cookies."""
     try:
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "button.css-47sehv"))
         ).click()
     except Exception:
@@ -241,6 +258,21 @@ def search_and_collect_data(driver, query):
     return get_tournament_links(driver)
 
 
+def print_tables_preview(conn):
+    """Print first 30 rows of tables."""
+    print("\n=== TOURNAMENTS (FIRST 30 ROWS) ===")
+    tournaments_df = conn.execute(
+        "SELECT * FROM tournaments LIMIT 30"
+    ).fetchdf()
+    print(tournaments_df)
+
+    print("\n=== PLAYERS (FIRST 30 ROWS) ===")
+    players_df = conn.execute(
+        "SELECT * FROM players LIMIT 30"
+    ).fetchdf()
+    print(players_df)
+
+
 def run_data_collection():
     """Main execution loop."""
     queries = ["European Youth", "International Open", "World Youth"]
@@ -250,7 +282,9 @@ def run_data_collection():
     driver.get(BASE_URL)
     accept_cookies(driver)
 
-    for query in queries:
+    for query in tqdm(queries, desc="Queries", unit="query"):
+        logging.info(f"Starting query: {query}")
+
         pending_links = conn.execute(
             "SELECT link FROM tournaments WHERE query = ? AND checked = FALSE",
             (query,)
@@ -267,15 +301,19 @@ def run_data_collection():
                 )
             pending_links = links
 
-        for link in pending_links:
+        for link in tqdm(pending_links, desc="Tournaments", unit="tournament", leave=False):
             process_url(conn, link)
             conn.execute(
                 "UPDATE tournaments SET checked = TRUE WHERE link = ?",
                 (link,)
             )
 
+        logging.info(f"Completed query: {query}")
+
     driver.quit()
+    print_tables_preview(conn)
     conn.close()
+    logging.info("Data collection completed")
 
 
 run_data_collection()
