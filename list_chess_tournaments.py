@@ -4,6 +4,8 @@ import duckdb
 import logging
 import requests
 import time
+import random
+from requests.exceptions import RequestException, Timeout
 import pandas as pd
 from bs4 import BeautifulSoup
 
@@ -104,39 +106,74 @@ def parse_table(html_content):
     return headers, data, title
 
 
-def extract_info_from_html(link):
-    """Extract FIDE profile metadata."""
-    soup = BeautifulSoup(requests.get(link, timeout=15).text, "html.parser")
+def extract_info_from_html(link, max_retries=3, base_delay=2):
+    """Extract FIDE profile metadata with retries."""
+    attempt = 0
 
-    federation = soup.select_one(".profile-info-country")
-    birth_year = soup.select_one(".profile-info-byear")
-    sex = soup.select_one(".profile-info-sex")
-    fide_title = soup.select_one(".profile-info-title p")
+    while attempt < max_retries:
+        try:
+            response = requests.get(link, timeout=15)
+            response.raise_for_status()
 
-    world_rank = None
-    rank_block = soup.find("h5", string="World Rank")
-    if rank_block:
-        world_rank = rank_block.find_next("h6", string="All players").find_next("p").text.strip()
+            soup = BeautifulSoup(response.text, "html.parser")
 
-    return (
-        federation.get_text(strip=True) if federation else None,
-        birth_year.get_text(strip=True) if birth_year else None,
-        sex.get_text(strip=True) if sex else None,
-        fide_title.get_text(strip=True) if fide_title else None,
-        world_rank,
-    )
+            federation = soup.select_one(".profile-info-country")
+            birth_year = soup.select_one(".profile-info-byear")
+            sex = soup.select_one(".profile-info-sex")
+            fide_title = soup.select_one(".profile-info-title p")
+
+            world_rank = None
+            rank_block = soup.find("h5", string="World Rank")
+            if rank_block:
+                world_rank = rank_block.find_next("h6", string="All players") \
+                                         .find_next("p") \
+                                         .text.strip()
+
+            return (
+                federation.get_text(strip=True) if federation else None,
+                birth_year.get_text(strip=True) if birth_year else None,
+                sex.get_text(strip=True) if sex else None,
+                fide_title.get_text(strip=True) if fide_title else None,
+                world_rank,
+            )
+
+        except (RequestException, Timeout) as e:
+            attempt += 1
+            wait_time = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+
+            logging.warning(
+                f"FIDE profile fetch failed (attempt {attempt}/{max_retries}) | "
+                f"URL={link} | Error={type(e).__name__} | Retrying in {wait_time:.1f}s"
+            )
+
+            time.sleep(wait_time)
+
+    logging.error(f"FIDE profile permanently failed after {max_retries} attempts: {link}")
+
+    return (None, None, None, None, None)
 
 
 def parse_fide_data(df):
-    """Enrich dataframe with FIDE metadata."""
+    """Enrich dataframe with FIDE metadata safely."""
     if "Link" not in df.columns:
         return df
 
     df = df.dropna(subset=["Link"])
     df = df[df["Link"].str.startswith("http")]
 
-    df[["Federation", "Birth Year", "Sex", "FIDE Title", "World Rank"]] = (
-        df["Link"].apply(lambda x: pd.Series(extract_info_from_html(x)))
+    results = []
+
+    for link in df["Link"]:
+        try:
+            result = extract_info_from_html(link)
+        except Exception as e:
+            logging.error(f"Unexpected failure in FIDE parsing for {link}: {e}")
+            result = (None, None, None, None, None)
+
+        results.append(result)
+
+    df[["Federation", "Birth Year", "Sex", "FIDE Title", "World Rank"]] = pd.DataFrame(
+        results, index=df.index
     )
 
     return df
