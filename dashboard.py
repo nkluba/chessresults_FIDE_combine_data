@@ -192,14 +192,36 @@ else:
 # Top ranked players
 st.subheader("Top Ranked Players")
 
-ranked_df = df.copy()
-ranked_df["World Rank"] = pd.to_numeric(ranked_df["World Rank"], errors="coerce")
-ranked_df = ranked_df.dropna(subset=["World Rank"]).sort_values("World Rank")
+if not df.empty and {"Name", "Federation", "World Rank", "tournament"}.issubset(df.columns):
 
-st.dataframe(
-    ranked_df[["Name", "Federation", "World Rank", "tournament"]].head(25),
-    use_container_width=True
-)
+    ranked_df = df.copy()
+
+    ranked_df["World Rank"] = pd.to_numeric(
+        ranked_df["World Rank"], errors="coerce"
+    )
+
+    ranked_df = ranked_df.dropna(subset=["World Rank"])
+
+    if not ranked_df.empty:
+        grouped = (
+            ranked_df
+            .groupby(["Name", "Federation"], as_index=False)
+            .agg(
+                Best_Rank=("World Rank", "min"),
+                Tournaments=("tournament", lambda x: ", ".join(sorted(set(x))))
+            )
+            .sort_values("Best_Rank")
+        )
+
+        st.dataframe(
+            grouped.head(25),
+            use_container_width=True
+        )
+    else:
+        st.info("No ranked players available after filtering.")
+else:
+    st.info("Required columns for ranking are not present in the dataset.")
+
 
 st.divider()
 
