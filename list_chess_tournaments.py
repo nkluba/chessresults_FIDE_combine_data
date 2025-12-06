@@ -16,7 +16,7 @@ from selenium.webdriver.support import expected_conditions as EC
 
 
 BASE_URL = "https://chess-results.com/TurnierSuche.aspx?lan=1"
-DB_PATH = "chess_data.duckdb"
+DB_PATH = "/app/processed_data/chess_data.duckdb"
 
 
 logging.basicConfig(
@@ -280,7 +280,7 @@ def search_and_collect_data(driver, query, start_date, end_date):
         )
     ).send_keys(Keys.ENTER)
 
-    time.sleep(2)
+    #time.sleep(1)
 
     links = get_tournament_links(driver)
 
@@ -382,31 +382,59 @@ def evoke_data_collection():
     Entry point for running the tournament scraping pipeline.
     No parameters; ready for Docker ENTRYPOINT execution.
     """
-    parser = argparse.ArgumentParser(description="Run Chess Tournament Scraper with DuckDB backend.")
+    parser = argparse.ArgumentParser(
+        description="Run Chess Tournament Scraper with DuckDB backend."
+    )
+
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["scrape", "dashboard"],
+        help="Run mode: scrape or dashboard"
+    )
+
     parser.add_argument(
         "--start-date",
-        required=True,
-        help="Start date in DD.MM.YYYY format"
+        help="Start date in DD.MM.YYYY format (required for scrape mode)"
     )
+
     parser.add_argument(
         "--end-date",
-        required=True,
-        help="End date in DD.MM.YYYY format"
+        help="End date in DD.MM.YYYY format (required for scrape mode)"
     )
+
     parser.add_argument(
         "--queries",
-        required=True,
-        help="Comma-separated list of tournament queries"
+        help="Comma-separated list of tournament queries (required for scrape mode)"
     )
 
     args = parser.parse_args()
 
-    queries = [q.strip() for q in args.queries.split(",") if q.strip()]
+    if args.mode == "dashboard":
+        import os
+        os.system("streamlit run dashboard.py --server.address=0.0.0.0")
+        return
 
-    if not queries:
-        print("No valid tournament queries provided.")
-        sys.exit(1)
+    if args.mode == "scrape":
+        missing = []
 
-    print("Starting chess data collection...")
-    run_data_collection(args.start_date, args.end_date, queries)
-    print("Data collection complete.")
+        if not args.start_date:
+            missing.append("--start-date")
+        if not args.end_date:
+            missing.append("--end-date")
+        if not args.queries:
+            missing.append("--queries")
+
+        if missing:
+            parser.error(
+                f"The following arguments are required for scrape mode: {', '.join(missing)}"
+            )
+
+        queries = [q.strip() for q in args.queries.split(",") if q.strip()]
+
+        if not queries:
+            parser.error("At least one valid tournament query must be provided.")
+
+        print("Starting chess data collection...")
+        run_data_collection(args.start_date, args.end_date, queries)
+        print("Data collection complete.")
