@@ -31,4 +31,4 @@ ENV CHROME_BIN=/usr/bin/chromium
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 
 
-ENTRYPOINT ["python", "-c", "from list_chess_tournaments import run_data_collection; run_data_collection()"]
+ENTRYPOINT ["python", "-c", "from list_chess_tournaments import evoke_data_collection; evoke_data_collection()"]
