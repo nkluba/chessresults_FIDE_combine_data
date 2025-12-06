@@ -13,6 +13,10 @@ def get_connection():
 
 conn = get_connection()
 
+total_tournaments_global = conn.execute(
+    "SELECT COUNT(DISTINCT tournament) FROM players"
+).fetchone()[0]
+
 st.set_page_config(
     page_title="Chess Data Dashboard",
     layout="wide"
@@ -75,9 +79,9 @@ if df.empty:
 
 # KPIs
 col1, col2, col3 = st.columns(3)
-col1.metric("Total Players", len(df))
-col2.metric("Unique Tournaments", df["tournament"].nunique())
-col3.metric("Federations", df["Federation"].nunique())
+col1.metric("Total Players (Filtered)", len(df))
+col2.metric("Unique Tournaments (Total)", total_tournaments_global)
+col3.metric("Federations (Filtered)", df["Federation"].nunique())
 
 st.divider()
 
