@@ -61,22 +61,25 @@ def parse_table(html_content):
 
 def extract_info_from_html(link):
     """Extract FIDE profile metadata."""
-    response = requests.get(link, timeout=15)
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(requests.get(link, timeout=15).text, "html.parser")
 
-    profile = soup.find("div", class_="profile-top-info")
-    if not profile:
-        return None, None, None, None, None
+    federation = soup.select_one(".profile-info-country")
+    birth_year = soup.select_one(".profile-info-byear")
+    sex = soup.select_one(".profile-info-sex")
+    fide_title = soup.select_one(".profile-info-title p")
 
-    blocks = profile.find_all("div", class_="profile-top-info__block__row__data")
+    world_rank = None
+    rank_block = soup.find("h5", string="World Rank")
+    if rank_block:
+        world_rank = rank_block.find_next("h6", string="All players").find_next("p").text.strip()
 
-    federation = blocks[1].text.strip()
-    birth_year = blocks[3].text.strip()
-    sex = blocks[4].text.strip()
-    fide_title = blocks[5].text.strip()
-    world_rank = blocks[0].text.strip()
-
-    return federation, birth_year, sex, fide_title, world_rank
+    return (
+        federation.get_text(strip=True) if federation else None,
+        birth_year.get_text(strip=True) if birth_year else None,
+        sex.get_text(strip=True) if sex else None,
+        fide_title.get_text(strip=True) if fide_title else None,
+        world_rank,
+    )
 
 
 def parse_fide_data(df):
